@@ -17,9 +17,9 @@ Sys.setlocale("LC_TIME", "C")
 df_raw <- readr::read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2019/2019-02-26/full_trains.csv") 
 ```
 
-
+Cancellations\delays comments are either blank or in french which sadly I dont know >>> remove them.
 ``` r
-#Cancellations\delays comments are either blank or in french which sadly I dont know >>> remove them.
+
 
 df = df_raw %>%
   select(-c(comment_cancellations,comment_delays_at_departure,comment_delays_on_arrival))
