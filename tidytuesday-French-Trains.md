@@ -6,35 +6,7 @@ maor
 ``` r
 options(scipen = 999)
 library(tidyverse)
-```
-
-    ## -- Attaching packages -------------------------------------------------------------- tidyverse 1.3.0 --
-
-    ## <U+221A> ggplot2 3.3.0     <U+221A> purrr   0.3.3
-    ## <U+221A> tibble  2.1.3     <U+221A> dplyr   1.0.3
-    ## <U+221A> tidyr   1.0.2     <U+221A> stringr 1.4.0
-    ## <U+221A> readr   1.3.1     <U+221A> forcats 0.5.0
-
-    ## -- Conflicts ----------------------------------------------------------------- tidyverse_conflicts() --
-    ## x dplyr::filter() masks stats::filter()
-    ## x dplyr::lag()    masks stats::lag()
-
-``` r
 library(scales)
-```
-
-    ## 
-    ## Attaching package: 'scales'
-
-    ## The following object is masked from 'package:purrr':
-    ## 
-    ##     discard
-
-    ## The following object is masked from 'package:readr':
-    ## 
-    ##     col_factor
-
-``` r
 library(patchwork)
 Sys.setlocale("LC_TIME", "C")
 ```
@@ -45,18 +17,6 @@ Sys.setlocale("LC_TIME", "C")
 df_raw <- readr::read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2019/2019-02-26/full_trains.csv") 
 ```
 
-    ## Parsed with column specification:
-    ## cols(
-    ##   .default = col_double(),
-    ##   service = col_character(),
-    ##   departure_station = col_character(),
-    ##   arrival_station = col_character(),
-    ##   comment_cancellations = col_logical(),
-    ##   comment_delays_at_departure = col_logical(),
-    ##   comment_delays_on_arrival = col_character()
-    ## )
-
-    ## See spec(...) for full column specifications.
 
 ``` r
 #Cancellations\delays comments are either blank or in french which sadly I dont know >>> remove them.
