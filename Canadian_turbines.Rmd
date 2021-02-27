@@ -1,0 +1,789 @@
+---
+title: "Canadian Wind Turbines"
+author: "Maor Ankri"
+date: "27 2 2021"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+
+![](https://nawindpower.com/wp-content/uploads/2017/01/iStock-174169563-1.jpg){#id .class width=50% height=50%}
+
+##### **In this notebook I explore the canadian wind turbines dataset which was published on the tidytuesday project, you find the dataset [here](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-10-27/readme.md)**
+##### **I start by data viz & analysis and the then move to modeling; I use linear regression and regression tree in order to predict a turbine's capacity to generate electricity.**
+
+
+```{r include = FALSE}
+#knitr::opts_chunk$set(echo=FALSE)
+```
+
+
+```{r,message=FALSE}
+library(tidyverse)  
+library(ggplot2) 
+library(ggResidpanel)
+library(patchwork) 
+library(tidymodels) 
+library(scales) 
+library(plotly) 
+library(corrplot)
+library(RColorBrewer)
+library(viridis) 
+library(dplyr) 
+library(stargazer)
+library(rpart)
+library(reactable)
+library(knitr)
+library(kableExtra)
+library(vip)
+options(scipen = 999)
+
+```
+
+##### **Read the data from tidytuesday**
+```{r,message=FALSE}
+
+df_raw <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-10-27/wind-turbine.csv')
+
+df = df_raw
+
+```
+
+##### **First look at the data:**
+
+```{r}
+
+
+df[1:20,] %>%
+  reactable(
+  pageSizeOptions = c(4, 8, 12),
+   resizable = TRUE, 
+  wrap = FALSE, 
+  bordered = TRUE,
+  compact = T,
+  defaultColDef = colDef(minWidth = 150)
+  )
+
+
+
+  
+```
+
+##### **Missing values and unique values in each column**
+```{r}
+
+t1= data.frame(unique.count = apply(df,2,function(x) length(unique(x)))) #unique values data
+t2 = data.frame(na.count = colSums(is.na(df_raw)))
+cbind(column = colnames(df),unique_count = t1$unique.count,na_count = t2$na.count) %>% 
+kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = F) %>% 
+  kable_paper(full_width = F, font_size =20)
+```
+
+
+* Each row represents a different turbine
+* 92 models,23 manufacturers
+* 48 levels of capacity; we may want to take that into consideration in our modeling.
+
+##### **Any pattern to na values?**
+```{r}
+na_ind = which(is.na(df$turbine_rated_capacity_k_w))
+View(df[na_ind,])
+
+```
+
+* All are located in Ontario, 3 different project, 2014-2015, notes attached.
+* I may or may not deal with those later on. 
+* Missing values account for only  222/6698 = 3% of the data >>> romve them:
+
+```{r}
+df = df[-na_ind,]
+```
+
+
+##### **How many turbines in each province?**
+```{r}
+
+
+
+df %>% 
+  count(province_territory) %>%
+  rename(count = n) %>% 
+  mutate(pct = round(count/nrow(df),2)) %>%           # turbines in each province
+  arrange(desc(count)) %>%  
+  kbl() %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F) %>% 
+  kable_paper(full_width = F)
+
+
+```
+
+
+##### **Re-naming columns**
+```{r}
+df = df %>%  rename(rotor.d = rotor_diameter_m,
+                 hub.h = hub_height_m,
+                commission.y = commissioning_date,
+                turbine_capacity = turbine_rated_capacity_k_w,
+                project_capacity=total_project_capacity_mw) 
+
+
+```
+
+##### **summary statistics of numeric variables**
+```{r}
+
+num.dat = df %>% select_if(is.numeric) %>% select(-objectid)
+
+ apply(num.dat,2,function(x) round(summary(x))) %>% 
+   kbl() %>%
+  kable_styling(bootstrap_options = c("striped","hover","bordered")) %>% 
+    kable_paper(full_width = F ) 
+
+```
+
+
+* Since we have coordinates we can create a map to see  where the turbines are located in each province. I don't think it will prove itself particularly useful but it's real fun :)
+* So, I leave Ontario,Alberta and Quebec and lump the rest.
+* Note: in those three provinces more than 5k turbines are located - the bulk of this dataset.
+
+```{r,message = FALSE,warning=FALSE}
+
+df = df %>% mutate(province_territory = fct_lump_n(province_territory, 3))
+
+prov.coord = df %>%
+  group_by(province_territory) %>% 
+  summarise(prov.lat = (mean(latitude) + 4),
+            prov.lon = (mean(longitude))) %>%
+  slice(1:3) 
+  
+rownames(prov.coord) = c("Alberta","Ontario","Quebec") # So we can add annotations of these provinces to the map
+
+canada = map_data("world", region = "canada")
+
+canada %>% 
+ggplot(aes(x = long, y = lat))+
+  
+     geom_polygon(aes(group = group), fill = "grey") +
+  
+     geom_density2d(df,mapping = aes(longitude,latitude),
+                  alpha = 0.4,
+                  size = 0.8,
+                  color = "cyan3")+
+  
+  geom_hex(df,mapping = aes(longitude,latitude,
+                            fill = province_territory,
+                            alpha = (..count..)),
+                            bins = 35)+
+  
+  geom_text(prov.coord,mapping = aes(prov.lon,prov.lat,
+                         color = province_territory,
+                         label = rownames(prov.coord)),
+                         fontface = "italic",
+                        fontface = "bold")+ # Adding an annotation for the main provinces
+
+  scale_fill_brewer(palette = "Dark2")+
+  scale_color_brewer(palette = "Dark2")+
+  theme(legend.position = "right", legend.text = element_text(size = 10))+
+  labs(title = "Canadian Wind Turbines")+
+      guides(colour = FALSE)+
+  theme_classic()
+
+```
+
+
+##### **How many observations in each year?**
+
+```{r}
+
+df %>% 
+  count(commission.y) 
+
+df$commission.y = as.numeric(str_sub(df$commission.y,1,4))
+
+
+```
+
+Some observations have multiple commission.y (2001/2003,2000/2001...ect)
+for each such observation I take the first year of commissioning (2001/2003 = 2001).
+
+#### **Output vs Capacity**
+
+$$\textit{Generally, a turbine output is given by the following closed equation:}\\
+P = 0.5 \cdot \rho \cdot A \cdot c_p \cdot V^3 \\
+\textit{Where,}\\ 
+\textit{ρ = Air density in kg/m3}\\
+\textit{A = Rotor swept area (m2)}\\
+\textit{Cp = Coefficient of performance}\\
+\textit{V = wind velocity (m/s)}$$
+
+* However, the variable we got in this dataset is "turbine rated capacity" which is defined as:
+"The nameplate capacity (or rated capacity) of a wind turbine is the amount of energy the turbine would produce if it ran 100% of the time at optimal wind speeds*."
+* https://www.nyserda.ny.gov/All-Programs/Programs/Clean-Energy-Siting/Wind-Guidebook*
+under the section "understanding wind energy", chapter 2.
+
+
+Since the turbine's output (and therefore its capacity) is  determined in a deterministic system there's little inference to make about it. My goal in this notebook is to analyze some aspects of this dataset and evaluate if I can predict a turbine's capacity reasonably well.
+
+##### **Let's plot the correlation matrix**
+
+```{r}
+
+library(corrplot)
+
+cor.dat = df %>%
+  select_if(is.numeric) %>%
+  select(-c(objectid,
+            project_capacity))
+
+corrplot(cor(cor.dat),
+         method = "color",
+         type = "upper",
+         addCoef.col = "black",
+         tl.col="black",
+         tl.srt=45)
+
+```
+
+* Fairly strong linear correlations between all variables.
+* We may want to see if linear regression is appropriate.
+
+##### **longitude-latitude plots**
+
+```{r}
+library(plotly)
+library(viridis)
+
+p = df %>% ggplot(aes(longitude,latitude,size = turbine_capacity,color = turbine_capacity))+
+  geom_jitter(alpha = 0.1 )+
+  scale_color_viridis()+
+  theme_light()
+
+ggplotly(p)
+
+```
+
+* It seems there is no clear clear pattern but there are so many over-plotted points.
+* I do want to explore this a bit further and it might be useful going ahead so let's
+rank the turbine's capacity using the *interquartile range* as a "stupid" classifier.
+
+$$\left\{
+\begin{array}{ll}
+      High\ Capacity & if,\  turbine\ capacity\leq Q_1 \\
+      Medium\ Capacity &if,\ Q_1< turbine\ capacity< Q_2 \\
+      Low\ Capacity &if,\ turbine\ capacity\leq Q_3 \\
+\end{array} 
+\right.$$
+
+```{r}
+
+
+quants = quantile(df$turbine_capacity,seq(0.25,0.75,0.25))
+
+quants 
+
+Q_1 = quants[1]
+Q_2 = quants[2]
+Q_3 = quants[3]
+
+
+
+
+```
+
+     
+
+```{r}
+df = df %>% mutate(rank = ifelse(
+                           df$turbine_capacity<=Q_1,
+                            yes = "Low Capacity",
+                             no = ifelse(
+                               df$turbine_capacity>Q_1 &
+                                df$turbine_capacity<Q_3,
+                                   "Medium Capacity",
+                                   "High Capacity")))
+
+df$rank = factor(df$rank, levels = c("High Capacity",
+                                     "Medium Capacity",
+                                     "Low Capacity" )) # So facet plots appear in this order
+```
+
+
+In the following plots we confirm that a turbine's capacity is indeed independent of its location:
+
+```{r,fig.width=10,message=FALSE,warning=FALSE}
+
+ggplot(df,aes(longitude,latitude))+
+  geom_density_2d_filled(alpha = 0.7,df,mapping = aes(longitude,latitude))+
+   facet_grid(~rank)+
+  ylim(c(40,60))+
+   theme_minimal()
+
+
+```
+
+We saw already that our data is not sparse, therefore we need a plot which gives us some sense about the density of observations in a given point (interval); We can use **_geom_hex_** to achieve that. 
+
+```{r,message = FALSE,fig.width=12,warning=FALSE}
+
+
+p1 =ggplot(df,aes(rotor.d,turbine_capacity))+
+    scale_fill_viridis(option = "C")+
+  geom_hex(bins = 20)+
+  geom_smooth(method="lm") +
+    theme(legend.position = "none")
+  
+  
+p2 = ggplot(df,aes(commission.y,turbine_capacity))+
+    scale_fill_viridis(option = "C")+
+  geom_hex(bins = 20)+
+  geom_smooth(method="lm")+
+  theme(legend.position = "none")+
+  theme(axis.title.y=element_blank(),
+           axis.text.y=element_blank(),
+         axis.ticks.y=element_blank())
+
+p3 = ggplot(df,aes(hub.h,turbine_capacity))+
+  scale_fill_viridis(option = "C")+
+   geom_hex(bins = 20)+
+  geom_smooth(method="lm")+
+  theme(axis.title.y=element_blank(),
+           axis.text.y=element_blank(),
+         axis.ticks.y=element_blank())
+  
+   
+  
+
+
+  p1+p2+p3
+
+
+
+```
+
+##### **Can we use hub and rotor in interaction?**
+
+```{r,echo=FALSE}
+df$interaction.hub.rotor = df$rotor.d*df$hub.h
+
+p = ggplot(df,aes(interaction.hub.rotor,turbine_capacity))+
+  scale_fill_viridis(option = "C")+
+   geom_hex(bins = 20)+
+  geom_smooth(method="lm")
+
+ggplotly(p)
+
+
+
+
+```
+
+
+
+
+##### **comparing manufacturers**
+
+```{r,echo=FALSE}
+df %>%
+  mutate(manufacturer = fct_lump_prop(manufacturer, 0.05)) %>% 
+  plot_ly(y = ~turbine_capacity, 
+        color = ~manufacturer,
+        type = "box") %>% 
+        layout(title = 'Manufacturers Comparison',
+         xaxis = list(title = "Manufacturer"),
+         yaxis = list(title = "capacity_k_w"))
+```
+
+
+
+##### **Create a table with the average capacity for each model**
+```{r,message = FALSE}
+
+library(reactable)
+manufacturer_model_table =  df %>%
+  group_by(manufacturer,model) %>% 
+  summarise(
+    count = n(),
+    avg.capacity = round(mean(turbine_capacity)), 
+    sd.capacity = round(sd(turbine_capacity))
+    ) %>%
+  ungroup() %>% 
+ mutate(sd.capacity = ifelse(is.na(sd.capacity),0,sd.capacity)) %>% 
+arrange(desc(count)) 
+
+reactable(manufacturer_model_table,
+          filterable = TRUE,
+          showPageSizeOptions = TRUE,
+          bordered = TRUE,
+          striped = T,
+          compact = T)
+
+
+
+```
+
+* Virtually, each model has exactly the same capacity (no variability within models).
+Therefore *I will not* use this  variable in modeling.
+
+---
+
+## Modeling 
+
+* In the first table in this notebook we saw there are 48 levels to our dependent variable - turbine capacity which its values range from 60 to 4000.
+* Therefore we can approach this as a continuous problem or as (almost) classification problem.
+* So, we use linear regression and then move on to a regression tree model.
+
+### Linear Regression
+
+1. We create a new data frame("dat") which includes only the variables we will use.
+2. We standardize our data
+3. We split the data to train and test and run the following basic regression lines:
+
+
+$$1.\textit{turbine capacity}_i =\beta_0 + \beta_1\textit{rotor diameter} + \beta_2\textit{hub height}+\epsilon\\$$
+
+$$2.\textit{turbine capacity}_i =\beta_0 + \beta_1\textit{rotor diameter} + \beta_2\textit{hub height}+\beta_3\textit{commission date}+\epsilon\\$$
+
+$$3.\textit{turbine capacity}_i =\beta_0 + \beta_1\textit{rotor diameter} + \beta_2\textit{hub height}+\beta_3\textit{commission date}+\beta_4\textit{manufacturer}+\epsilon\\$$
+
+* By adding one variable at a time we can estimate roughly its predictive power.
+* Specifically, we observe the change in R squared adjusted.
+
+```{r results='asis',echo=FALSE}
+library(stargazer)
+
+# Create new data frame which includes only the varibles we will use in the model and standardize it.
+
+df = df %>%
+  mutate(manufacturer = fct_lump_prop(manufacturer, 0.05)) 
+
+ dat = df %>%
+    select(which(sapply(.,class)=="numeric"),
+           manufacturer,
+           -c(objectid,project_capacity,longitude,latitude)) %>% 
+            mutate(sqrt.rotor.d = sqrt(rotor.d)) %>% 
+           mutate_if(is.numeric,scale) %>% 
+           as.data.frame()
+
+set.seed(1)
+train_ind = sample(1:nrow(dat),round(0.75*nrow(dat)))
+train_ols = dat[train_ind,]
+test_ols = dat[-train_ind,]
+
+basic_model1 = lm(turbine_capacity ~ 
+     rotor.d+
+       hub.h
+     ,data =train_ols)
+
+basic_model2 = lm(turbine_capacity ~ 
+     rotor.d+
+       hub.h+
+       commission.y
+     ,data =train_ols)
+
+base_model3 = lm(turbine_capacity ~ 
+     rotor.d+
+       hub.h+
+       commission.y+
+       manufacturer
+     ,data =train_ols)
+
+stargazer(basic_model1,basic_model2,base_model3,
+          digits = 2,
+          type = "html",
+          font.size = "tiny",
+          single.row = T,
+          header=FALSE,
+          title = "Regression Results")
+
+
+
+```
+
+### More complicated models:
+
+We include interactions and check if the square root transformation of the rotor variable is justified. 
+
+
+$$1.\textit{turbine capacity}_i =\beta_0 + \beta_1\sqrt{\textit{rotor diameter}}\times\textit{hub height}\times\textit{manufacturer}\times\textit{commission date}+\epsilon\\$$
+
+$$2.\textit{turbine capacity}_i =\beta_0 + \beta_1\textit{rotor diameter}\times\textit{hub height}\times\textit{commission date}\times\textit{manufacturer}+\epsilon\\$$
+<br/>
+
+##### Note: in each model there are:
+$$\textit{Intercept}+\underbrace{5}_{dummies}+6\sum_{k=1}^{3}{{3}\choose{k}} = \text{48 coefficients}$$
+
+```{r results='asis',echo=FALSE}
+
+model1 =  lm(turbine_capacity ~
+     sqrt.rotor.d*hub.h*manufacturer*commission.y,data =train_ols)
+
+
+model2 =  lm(turbine_capacity ~
+     rotor.d*hub.h*manufacturer*commission.y,data =train_ols)
+
+
+
+stargazer(model1,model2,
+          style = "qje",
+          digits = 2,
+          type = "html",
+          header=FALSE,
+          title = "Regression Results",omit = c("manufacturer"))
+```
+
+
+<br/>
+
+##### **Model 2 seems to do a little better, let's check the regression diagnostic plots and see how they compared.**
+
+```{r results='asis',echo=FALSE}
+library(ggResidpanel)
+
+ p1 = resid_panel(model1, plots = "R")
+ 
+ p2 = resid_panel(model2,plots = "R")
+ 
+ p1+p2
+```
+
+
+
+* First of all, it's good to observe the residual.vs.fitted  & Leverage plots.
+* Second, the QQ plot isn't too terrible but not great either.
+* But for both models the plots look identical so we can't reach any conclusion from looking at them.
+
+## **_Monte Carlo Cross Validation_**
+
+* We split the dataset 100 times into training and testing.
+* In each iteration we estimate the following metrics on the training data and extract them:
+
+$$1. \textit{RMSE} =\sqrt{\frac{\sum_{i=1}^{n} (y_i - \hat{y_i})^2  }{n}}$$
+
+$$ 2.R^2 =1 - \frac{\sum_{i=1}^{n} (y_i - \hat{y_i})^2}{\sum_{i=1}^{n} (y_i - \bar{y_i})^2}$$
+
+
+
+```{r}
+#Monte Carlo Cross Validation
+
+#Custon function to extract rmse
+rmse.fun <- function(model) {sqrt(mean(residuals(model)^2))}
+
+rmse.ols.model1 = rep(0,100)
+rsq.ols.model1 = rep(0,100)
+rmse.ols.model2 = rep(0,100)
+rsq.ols.model2 = rep(0,100)
+
+set.seed(2021)
+for (i in 1:100) {
+
+#Sample and split the data
+train_ind = sample(1:nrow(df),round(0.75*nrow(df)))
+train_ols = dat[train_ind,]
+
+
+#extract the metrics model.1
+ols.model1 = lm(turbine_capacity ~
+    sqrt.rotor.d*hub.h*manufacturer*commission.y,data =train_ols)
+
+rmse.ols.model1[i] = rmse.fun(ols.model1)
+rsq.ols.model1[i] = summary(ols.model1)$r.squared
+
+#extract the metrics model.2
+ols_model2 =  lm(turbine_capacity ~
+     rotor.d*hub.h*manufacturer*commission.y,data =train_ols)
+
+rmse.ols.model2[i] = rmse.fun(ols_model2)
+rsq.ols.model2[i] = summary(ols_model2)$r.squared
+
+
+}
+
+metrics = round(
+  cbind.data.frame(rmse.ols.model1,
+                   rsq.ols.model1,
+                   rmse.ols.model2,
+                   rsq.ols.model2),2)
+
+apply(metrics,2,function(x) round(summary(x),5)) %>%
+   kbl() %>%
+    kable_styling(bootstrap_options = c("striped","hover","bordered")) %>% 
+    kable_paper(full_width = F) 
+
+
+
+
+
+```
+
+<br/>
+
+##### **Small difference but still, the untransformed model is a bit better.How does the model preform on the test data?**
+
+```{r}
+
+ols.test = lm(turbine_capacity ~
+     rotor.d*hub.h*manufacturer*commission.y,data =test_ols)
+
+rmse.ols.test = rmse.fun(ols.test)
+rsq.ols.test = summary(ols.test)$r.squared
+
+rmse.rsq.ols.test =  rbind(rmse.ols.test,rsq.ols.test)
+data.frame(OLS = rmse.rsq.ols.test)
+
+
+```
+
+```{r}
+p.ols =  test_ols %>% 
+  mutate(preds=predict(ols.model1,test_ols)) %>%
+  select(c(turbine_capacity, preds)) %>%
+  ggplot(aes(turbine_capacity, preds)) +
+  geom_abline(slope = 1, lty = 2, color = "gray50", alpha = 0.5) +
+  geom_point(alpha = 0.6, color = "darkblue") +
+  ggtitle("Regression - Actual vs Fitted")+
+  coord_fixed()
+  
+  p.ols
+
+```
+
+---
+
+### Regression tree
+
+##### My first attempt using the tidymodels package.
+##### We fit a regression tree using four variables:
+ - Interaction hub.h*rotor.d
+ - Rotor.d
+ - Hub.h
+ - Commission.y
+
+##### **So we drop manufacturer which we *did* use in the regression model.**
+
+```{r}
+
+library(rpart)
+
+dat2 = df %>%                             
+  select_if(is.numeric) %>%
+    select(-c(objectid,
+            latitude,
+            longitude,
+            project_capacity)) %>% 
+  mutate_if(is.numeric,scale)
+  
+
+
+set.seed(1)
+split = initial_split(dat2)
+train_tree = training(split)
+test_tree = testing(split)
+
+
+# Vfold cross validation
+set.seed(1)
+folds = vfold_cv(v = 5 ,train_tree,strata = turbine_capacity)
+
+tree_specification = decision_tree(cost_complexity = tune(),
+                                   tree_depth = tune(),
+                                   min_n = tune()) %>%
+                    set_engine("rpart") %>%
+                    set_mode("regression")
+
+
+tree_grid = grid_regular(cost_complexity(), 
+                         tree_depth(), 
+                         min_n(), 
+                         levels = 3)
+# generate different combintions of cost - complexity & tree depths parameters
+# min_n(): The minimum number of data points in a node that is required for the node to be split further.
+```
+
+
+```{r,echo=FALSE}
+
+doParallel::registerDoParallel()
+```
+
+```{r}
+set.seed(1)
+tree_rs = tune_grid(
+  tree_specification,
+  turbine_capacity ~.,
+  resamples = folds,
+  grid = tree_grid,
+  metrics = metric_set(rmse, rsq)
+)
+
+# tune_grid() computes a set of performance metrics (e.g. accuracy or RMSE) for a pre-defined set of tuning parameters that correspond to a model or recipe across one or more resamples of the data.
+```
+
+
+```{r,fig.width=10}
+autoplot(tree_rs)
+```
+
+* The tree's depth is going to be 15 with quite a small cost-complexity parameter.
+* We choose the parameters for which we obtain the lowest RMSE and apply the model on the test data.
+
+```{r}
+
+final_tree = finalize_model(tree_specification, select_best(tree_rs, "rmse"))
+final.fit = fit(final_tree, turbine_capacity ~ ., train_tree)
+final.rs = last_fit(final_tree, turbine_capacity ~ ., split)
+```
+
+
+
+##### **What are the most important variables in the regression tree?**
+```{r,message=FALSE,warning=FALSE}
+
+library(vip)
+final.fit %>% 
+  vip(geom = "col", aesthetics = list(fill = "darkblue"))+
+  ggtitle("Rank of variables by prediction importance")
+
+```
+
+
+##### **Tree vs regression performance on the test data**
+```{r}
+
+collect_metrics(final.rs) %>%
+  rename(Tree = .estimate) %>%
+  select(-c(.estimator,.config)) %>%
+  mutate(OLS = rmse.rsq.ols.test) %>%  
+  kbl() %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F) %>% 
+  kable_paper(html_font = "arial",full_width = F,font_size = 38) 
+
+
+```
+
+```{r}
+
+p.tree = final.rs %>%
+  collect_predictions() %>%
+  ggplot(aes(turbine_capacity, .pred)) +
+  geom_abline(slope = 1, lty = 2, color = "gray50", alpha = 0.5) +
+  geom_point(alpha = 0.6, color = "darkblue") +
+  ggtitle("Tree - Actual vs Fitted")+
+  coord_fixed()
+
+
+
+p.ols + p.tree
+
+
+
+```
+
+```{r}
+
+```
+
+
